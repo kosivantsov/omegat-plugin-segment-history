@@ -36,4 +36,4 @@ Place the plugin JAR here:
 Restart OmegaT after copying the JAR so the plugin is loaded.
 
 ## License
-GPLv3 (see `LICENSE`).
+GPLv3 (see [`LICENSE`](LICENSE)).

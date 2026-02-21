@@ -25,10 +25,7 @@ distributions {
         contents {
             from(tasks["jar"])
             from("README.md")
-            from("COPYING")
-            into("src/main/resources") {
-                from("src/main/resources")
-            }
+            from("LICENSE")
         }
     }
 }
