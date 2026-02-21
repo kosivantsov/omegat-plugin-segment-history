@@ -23,7 +23,7 @@ public class SegmentHistoryManager {
     private String currentHistoryFile;
     private SegmentHistoryData currentData;
     private boolean isAlternativeMode;
-    
+
     // Listener for UI updates
     private Runnable updateListener;
 
@@ -37,7 +37,7 @@ public class SegmentHistoryManager {
     public boolean isAlternativeMode() {
         return isAlternativeMode;
     }
-    
+
     public void setUpdateListener(Runnable listener) {
         this.updateListener = listener;
     }
@@ -48,14 +48,14 @@ public class SegmentHistoryManager {
         if (Core.getProject() == null || !Core.getProject().isProjectLoaded()) return;
 
         // 1. Determine if this is an alternative translation
-        // TMXEntry has a public final field 'defaultTranslation'
+        // TMXEntry has 'defaultTranslation'
         TMXEntry tmx = Core.getProject().getTranslationInfo(entry);
 
         // If tmx is null, it means no translation exists yet, so it defaults to the 'default' behavior
         boolean isDefault = (tmx == null) || tmx.defaultTranslation;
         this.isAlternativeMode = !isDefault;
 
-        // 2. Resolve the "Master" entry for file naming
+        // 2. Resolve the master entry for file naming
         // If Default -> Find the FIRST occurrence (source of propagation)
         // If Alternative -> Use CURRENT entry (individual history)
         SourceTextEntry masterEntry;
@@ -67,12 +67,18 @@ public class SegmentHistoryManager {
 
         this.currentEntry = masterEntry;
 
-        // 3. Generate Filename based on Master Entry
+        // 3. Generate Filename based on master entry
         // Format: <filepath_md5>_<sourcetext_md5>_<relative_num>[_alt].xml.gz
         this.currentHistoryFile = getHistoryFilePath(masterEntry, isAlternativeMode);
 
+        // Track whether a history file existed BEFORE loading/creating data.
+        boolean historyFileExistedBefore = currentHistoryFile != null && new File(currentHistoryFile).exists();
+
         // 4. Load Data with Conflict Resolution
         this.currentData = loadHistoryData(this.currentHistoryFile, masterEntry);
+
+        // 4b. Seed first snapshot from existing translation metadata (only when history file did not exist yet)
+        seedFirstSnapshotFromTmxIfNeeded(masterEntry, historyFileExistedBefore);
 
         // 5. Start Timer
         int intervalSeconds = SegmentHistoryPrefs.getSnapshotInterval();
@@ -100,7 +106,7 @@ public class SegmentHistoryManager {
         if (!history.isEmpty()) {
             HistorySnapshot last = history.get(history.size() - 1);
             if (last.getText() != null && last.getText().equals(currentText)) {
-                return; // No change
+                return;
             }
         }
 
@@ -108,7 +114,7 @@ public class SegmentHistoryManager {
         snapshot.setTimestamp(System.currentTimeMillis());
         snapshot.setText(currentText);
         snapshot.setAlternative(isAlternativeMode);
-        
+
         // Save Author
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
@@ -130,7 +136,7 @@ public class SegmentHistoryManager {
 
         // If raw load is empty/mismatched, try to resolve logic similar to activation
         if (!validateData(data, masterEntry)) {
-             return new ArrayList<>();
+            return new ArrayList<>();
         }
 
         return data.getSnapshots();
@@ -143,7 +149,7 @@ public class SegmentHistoryManager {
             return entry;
         }
 
-        // It's a repetition (NEXT/SUBSEQUENT). Find the FIRST in the whole project.
+        // It's a repetition (NEXT). Find the FIRST in the whole project.
         String src = entry.getSrcText();
         for (SourceTextEntry cand : Core.getProject().getAllEntries()) {
             if (cand.getSrcText().equals(src)) {
@@ -153,7 +159,7 @@ public class SegmentHistoryManager {
                 }
             }
         }
-        return entry; // Fallback
+        return entry;
     }
 
     private String getHistoryFilePath(SourceTextEntry entry, boolean isAlternative) {
@@ -169,8 +175,8 @@ public class SegmentHistoryManager {
             String srcHash = getMD5(entry.getSrcText());
 
             // Construct filename with checksums
-            String filename = String.format("%s_%s_%d%s.xml.gz", 
-                fileHash, srcHash, info.relativeIndex, isAlternative ? "_alt" : "");
+            String filename = String.format("%s_%s_%d%s.xml.gz",
+                    fileHash, srcHash, info.relativeIndex, isAlternative ? "_alt" : "");
 
             return new File(editsDir, filename).getAbsolutePath();
         } catch (Exception e) {
@@ -193,7 +199,7 @@ public class SegmentHistoryManager {
                 return data;
             }
 
-            // 3. Mismatch detected. 
+            // 3. Mismatch detected.
             // Strategy: Look for the file 5 segments back and forward (heuristic for shifted segments)
             FileInfo info = getFileInfo(expectedEntry);
             if (info != null) {
@@ -206,15 +212,15 @@ public class SegmentHistoryManager {
                     int neighborIndex = info.relativeIndex + offset;
                     if (neighborIndex < 1) continue;
 
-                    String neighborName = String.format("%s_%s_%d%s.xml.gz", 
-                        fileHash, srcHash, neighborIndex, isAlternativeMode ? "_alt" : "");
+                    String neighborName = String.format("%s_%s_%d%s.xml.gz",
+                            fileHash, srcHash, neighborIndex, isAlternativeMode ? "_alt" : "");
                     File neighborFile = new File(editsDir, neighborName);
 
                     if (neighborFile.exists()) {
                         SegmentHistoryData neighborData = loadHistoryDataRaw(neighborFile.getAbsolutePath());
                         if (validateData(neighborData, expectedEntry)) {
                             // Found it! Rename neighbor to current (move history)
-                            // But first, backup current file if it exists
+                            // Backup current file if it exists
                             renameToBackup(f);
                             neighborFile.renameTo(f);
                             return neighborData;
@@ -258,8 +264,7 @@ public class SegmentHistoryManager {
 
     private boolean validateData(SegmentHistoryData data, SourceTextEntry entry) {
         if (data == null) return false;
-        // Check if source text matches. 
-        // Note: New empty data might have empty source text, consider valid if we are initializing
+        // Check if source text matches.
         if (data.getSourceText() == null || data.getSourceText().isEmpty()) return false;
         return data.getSourceText().equals(entry.getSrcText());
     }
@@ -277,7 +282,7 @@ public class SegmentHistoryManager {
         } finally {
             Thread.currentThread().setContextClassLoader(originalCL);
         }
-        
+
         // Notify listener that data has changed
         if (updateListener != null) {
             updateListener.run();
@@ -302,7 +307,7 @@ public class SegmentHistoryManager {
         if (!history.isEmpty()) {
             HistorySnapshot last = history.get(history.size() - 1);
             if (last.getText() != null && last.getText().equals(text)) {
-                return; // already saved
+                return;
             }
         }
 
@@ -310,7 +315,7 @@ public class SegmentHistoryManager {
         snapshot.setTimestamp(System.currentTimeMillis());
         snapshot.setText(text);
         snapshot.setAlternative(isAlternativeMode);
-        
+
         // Save Author
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
@@ -319,8 +324,111 @@ public class SegmentHistoryManager {
         saveHistory(currentHistoryFile, currentData);
     }
 
-    // --- Helpers ---
+    /**
+     * If a segment already has a translation (TMXEntry exists) but no history file existed yet,
+     * the *first* snapshot will reflect the translation metadata:
+     * - author = entry's changer
+     * - timestamp = entry's changeDate
+     *
+     * All subsequent snapshots will be created by takeSnapshot()/forceSnapshot() and will use TEAM_AUTHOR + current time.
+     */
+    private void seedFirstSnapshotFromTmxIfNeeded(SourceTextEntry entry, boolean historyFileExistedBefore) {
+        if (historyFileExistedBefore) return;
+        if (entry == null || currentData == null) return;
 
+        List<HistorySnapshot> history = currentData.getSnapshots();
+        if (history != null && !history.isEmpty()) return;
+
+        TMXEntry info = Core.getProject().getTranslationInfo(entry);
+        if (info == null) return;
+
+        String currentText = Core.getEditor().getCurrentTranslation();
+        if (currentText == null || currentText.trim().isEmpty()) return;
+
+        String changer = readStringProperty(info, "changer");
+        long changeDate = readLongProperty(info, "changeDate");
+
+        long ts = normalizeEpochMillis(changeDate);
+        if (ts <= 0) {
+            ts = System.currentTimeMillis();
+        }
+
+        if (changer == null || changer.trim().isEmpty()) {
+            changer = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
+        }
+
+        HistorySnapshot snapshot = new HistorySnapshot();
+        snapshot.setTimestamp(ts);
+        snapshot.setText(currentText);
+        snapshot.setAlternative(isAlternativeMode);
+        snapshot.setAuthor(changer);
+
+        currentData.addSnapshot(snapshot);
+        saveHistory(currentHistoryFile, currentData);
+    }
+
+    private long normalizeEpochMillis(long raw) {
+        if (raw <= 0) return raw;
+        // Heuristic: if it looks like seconds-since-epoch, convert to milliseconds.
+        if (raw < 10_000_000_000L) {
+            return raw * 1000L;
+        }
+        return raw;
+    }
+
+    private String readStringProperty(Object obj, String name) {
+        Object v = readProperty(obj, name);
+        return v == null ? null : String.valueOf(v);
+    }
+
+    private long readLongProperty(Object obj, String name) {
+        Object v = readProperty(obj, name);
+        if (v instanceof Number) {
+            return ((Number) v).longValue();
+        }
+        if (v != null) {
+            try {
+                return Long.parseLong(String.valueOf(v));
+            } catch (Exception ignored) {
+            }
+        }
+        return 0L;
+    }
+
+    private Object readProperty(Object obj, String name) {
+        if (obj == null || name == null || name.isEmpty()) return null;
+
+        // 1) Try field (public then declared)
+        try {
+            java.lang.reflect.Field f = obj.getClass().getField(name);
+            return f.get(obj);
+        } catch (Exception ignored) {
+        }
+        try {
+            java.lang.reflect.Field f = obj.getClass().getDeclaredField(name);
+            f.setAccessible(true);
+            return f.get(obj);
+        } catch (Exception ignored) {
+        }
+
+        // 2) Try getter (getXxx)
+        String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        try {
+            java.lang.reflect.Method m = obj.getClass().getMethod(getter);
+            return m.invoke(obj);
+        } catch (Exception ignored) {
+        }
+        try {
+            java.lang.reflect.Method m = obj.getClass().getDeclaredMethod(getter);
+            m.setAccessible(true);
+            return m.invoke(obj);
+        } catch (Exception ignored) {
+        }
+
+        return null;
+    }
+
+    // --- Helpers ---
     private static class FileInfo {
         String filePath;
         int relativeIndex;
@@ -341,7 +449,7 @@ public class SegmentHistoryManager {
                 info.filePath = fi.filePath;
 
                 // Find relative index within the file
-                for(int i=0; i<fi.entries.size(); i++) {
+                for (int i = 0; i < fi.entries.size(); i++) {
                     if (fi.entries.get(i).entryNum() == currentNum) {
                         info.relativeIndex = i + 1; // 1-based index
                         return info;
@@ -362,7 +470,7 @@ public class SegmentHistoryManager {
             }
             return sb.toString();
         } catch (Exception e) {
-            return Integer.toHexString(input.hashCode()); // Fallback
+            return Integer.toHexString(input.hashCode());
         }
     }
 }

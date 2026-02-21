@@ -21,7 +21,7 @@ import java.util.ResourceBundle;
 public class SegmentHistoryPlugin {
 
     private static final ResourceBundle BUNDLE = ResourceBundle.getBundle("org.truetranslation.omegat.plugin.SegmentHistoryBundle");
-    
+
     private static SegmentHistoryManager manager;
     private static JCheckBoxMenuItem enableMenuItem;
     private static JMenuItem deleteHistoryItem;
@@ -35,7 +35,7 @@ public class SegmentHistoryPlugin {
             public void onApplicationStartup() {
                 initMenus();
                 Core.getEditor().registerPopupMenuConstructors(1000, new HistoryPopupConstructor());
-                
+
                 PreferencesControllers.addSupplier(SegmentHistoryPrefs::new);
                 SegmentHistoryPrefs.setCallback(SegmentHistoryPlugin::updateFromPrefs);
             }
@@ -53,12 +53,11 @@ public class SegmentHistoryPlugin {
             @Override
             public void onEntryActivated(SourceTextEntry newEntry) {
                 updateEditMenuState(newEntry);
-                
+
                 boolean hasEntry = (newEntry != null);
-                
+
                 if (SegmentHistoryPrefs.isHistoryEnabled() && hasEntry) {
                     manager.onSegmentActivated(newEntry);
-                    // Notify dialog to update if it's open
                     SwingUtilities.invokeLater(() -> SegmentHistoryDialog.updateIfVisible(newEntry));
                 } else {
                     manager.stopTimer();
@@ -77,7 +76,7 @@ public class SegmentHistoryPlugin {
             if (enableMenuItem != null) {
                 enableMenuItem.setSelected(enabled);
             }
-            
+
             if (editMenuItem != null) {
                 editMenuItem.setAccelerator(SegmentHistoryPrefs.getShortcut());
                 updateEditMenuState(manager.getCurrentEntry());
@@ -106,8 +105,7 @@ public class SegmentHistoryPlugin {
 
         // --- Submenu Structure ---
         JMenu historySubMenu = new JMenu(BUNDLE.getString("seghistory_menu_options_menu"));
-        
-        // Add standard Swing MenuListener to update state lazily when user opens the menu
+
         historySubMenu.addMenuListener(new MenuListener() {
             @Override
             public void menuSelected(MenuEvent e) {
@@ -135,10 +133,9 @@ public class SegmentHistoryPlugin {
 
         // 2. Delete History Action
         deleteHistoryItem = new JMenuItem(BUNDLE.getString("seghistory_menu_delete_history"));
-        // Initial state
         boolean isProjectLoaded = (Core.getProject() != null && Core.getProject().isProjectLoaded());
         deleteHistoryItem.setEnabled(isProjectLoaded);
-        
+
         deleteHistoryItem.addActionListener(e -> deleteHistory());
         historySubMenu.add(deleteHistoryItem);
 
@@ -150,14 +147,13 @@ public class SegmentHistoryPlugin {
         } else {
             optionsMenu.add(historySubMenu);
         }
-        // -------------------------
 
         JMenuBar menuBar = Core.getMainWindow().getApplicationFrame().getJMenuBar();
         JMenu editMenu = null;
         if (menuBar != null && menuBar.getMenuCount() > 1) {
             editMenu = menuBar.getMenu(1);
         }
-        
+
         if (editMenu != null) {
             editMenu.addSeparator();
             editMenuItem = new JMenuItem(BUNDLE.getString("seghistory_menu_show"));
@@ -184,13 +180,13 @@ public class SegmentHistoryPlugin {
                 String rootPath = Core.getProject().getProjectProperties().getProjectRoot();
                 File projectRoot = new File(rootPath);
                 File editsDir = new File(projectRoot, "omegat/.edits");
-                
+
                 if (editsDir.exists() && editsDir.isDirectory()) {
                     // Stop any active writing
                     manager.stopTimer();
-                    
+
                     deleteRecursive(editsDir);
-                    
+
                     // Restart logic if still enabled and project open
                     if (SegmentHistoryPrefs.isHistoryEnabled()) {
                         SourceTextEntry current = manager.getCurrentEntry();
@@ -199,7 +195,7 @@ public class SegmentHistoryPlugin {
                             SwingUtilities.invokeLater(() -> SegmentHistoryDialog.updateIfVisible(current));
                         }
                     }
-                    
+
                     JOptionPane.showMessageDialog(
                         Core.getMainWindow().getApplicationFrame(),
                         BUNDLE.getString("seghistory_delete_success_message")
@@ -236,7 +232,7 @@ public class SegmentHistoryPlugin {
 
     private static void showHistoryDialog() {
         if (!SegmentHistoryPrefs.isHistoryEnabled()) return;
-        
+
         try {
             SourceTextEntry ste = manager.getCurrentEntry();
             if (ste == null) {
@@ -253,11 +249,11 @@ public class SegmentHistoryPlugin {
         @Override
         public void addItems(JPopupMenu menu, JTextComponent comp, int mousepos,
                              boolean isInActiveEntry, boolean isInActiveTranslation, SegmentBuilder sb) {
-            
+
             if (!SegmentHistoryPrefs.isHistoryEnabled()) return;
             if (!isInActiveEntry) return;
             if (manager == null || manager.getCurrentEntry() == null) return;
-            
+
             menu.addSeparator();
             JMenuItem item = new JMenuItem(BUNDLE.getString("seghistory_menu_show"));
             item.addActionListener(e -> showHistoryDialog());

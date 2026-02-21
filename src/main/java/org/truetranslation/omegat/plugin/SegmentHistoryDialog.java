@@ -30,7 +30,7 @@ public class SegmentHistoryDialog extends JDialog {
     private JTextPane diffPane;
     private final SegmentHistoryManager manager;
     private SourceTextEntry currentEntry;
-    
+
     // UI Controls
     private JRadioButton rbDiffCurrent;
     private JRadioButton rbDiffPrev;
@@ -46,7 +46,7 @@ public class SegmentHistoryDialog extends JDialog {
             currentInstance.setVisible(true);
         }
     }
-    
+
     public static void updateIfVisible(SourceTextEntry entry) {
         if (currentInstance != null && currentInstance.isVisible()) {
             currentInstance.updateForEntry(entry);
@@ -56,17 +56,17 @@ public class SegmentHistoryDialog extends JDialog {
     private SegmentHistoryDialog(Frame owner, SegmentHistoryManager manager, SourceTextEntry entry) {
         super(owner, BUNDLE.getString("seghistory_dialog_title"), false);
         this.manager = manager;
-        
+
         setLayout(new BorderLayout());
         setSize(900, 700);
         setLocationRelativeTo(owner);
-        
+
         list = new JList<>();
         list.setCellRenderer(new HistoryCellRenderer());
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         list.addListSelectionListener(this::onSelectionChange);
         list.setBackground(Styles.EditorColor.COLOR_BACKGROUND.getColor());
-        
+
         list.addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
@@ -92,7 +92,7 @@ public class SegmentHistoryDialog extends JDialog {
 
         // 1. Controls Row
         JPanel controlsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        
+
         // Compare Base Group
         JPanel pnlBase = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         pnlBase.add(new JLabel(BUNDLE.getString("seghistory_dialog_compare_with") + " "));
@@ -103,7 +103,7 @@ public class SegmentHistoryDialog extends JDialog {
         bgBase.add(rbDiffPrev);
         pnlBase.add(rbDiffCurrent);
         pnlBase.add(rbDiffPrev);
-        
+
         // Diff Granularity Group
         JPanel pnlMode = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         pnlMode.add(new JLabel("   " + BUNDLE.getString("seghistory_dialog_diff_type") + " "));
@@ -139,11 +139,11 @@ public class SegmentHistoryDialog extends JDialog {
         btnRestore.addActionListener(e -> restoreSelected());
         JButton btnCancel = new JButton(BUNDLE.getString("seghistory_dialog_btn_close"));
         btnCancel.addActionListener(e -> dispose());
-        
+
         buttonPanel.add(btnRestore);
         buttonPanel.add(btnCancel);
         bottomPanel.add(buttonPanel);
-        
+
         add(bottomPanel, BorderLayout.SOUTH);
 
         // --- Global ESC Key Binding ---
@@ -156,8 +156,6 @@ public class SegmentHistoryDialog extends JDialog {
                 dispose();
             }
         });
-        
-        // ------------------------------
 
         addWindowListener(new WindowAdapter() {
             @Override
@@ -169,34 +167,34 @@ public class SegmentHistoryDialog extends JDialog {
                 }
             }
         });
-        
+
         // Register this dialog as a listener to history updates
         manager.setUpdateListener(() -> SwingUtilities.invokeLater(() -> updateForEntry(this.currentEntry)));
 
         updateForEntry(entry);
     }
-    
+
     public void updateForEntry(SourceTextEntry entry) {
         if (entry == null) return;
         this.currentEntry = entry;
-        
+
         // Store selected index to restore it after update
         int selectedIndex = list.getSelectedIndex();
-        
+
         List<HistorySnapshot> history = new ArrayList<>(manager.getHistoryFor(entry));
         // Sort: newest first
         history.sort((s1, s2) -> Long.compare(s2.getTimestamp(), s1.getTimestamp()));
-        
+
         list.setListData(history.toArray(new HistorySnapshot[0]));
-        
+
         boolean isAlternative = manager.isAlternativeMode();
         String typeText = isAlternative ? BUNDLE.getString("seghistory_dialog_type_alternative") 
                                         : BUNDLE.getString("seghistory_dialog_type_default");
-        
+
         String title = MessageFormat.format(BUNDLE.getString("seghistory_dialog_title_format"), 
                 entry.entryNum(), typeText, history.size());
         setTitle(title);
-        
+
         // Restore selection or select first
         if (!history.isEmpty()) {
             if (selectedIndex >= 0 && selectedIndex < history.size()) {
@@ -208,18 +206,18 @@ public class SegmentHistoryDialog extends JDialog {
             diffPane.setText("");
         }
     }
-    
+
     private Font getEditorFont() {
         String name = Preferences.getPreferenceDefault(Preferences.TF_SRC_FONT_NAME, Preferences.TF_FONT_DEFAULT);
         int size = Preferences.getPreferenceDefault(Preferences.TF_SRC_FONT_SIZE, Preferences.TF_FONT_SIZE_DEFAULT);
         return new Font(name, Font.PLAIN, size);
     }
-    
+
     private void onSelectionChange(ListSelectionEvent e) {
         if (e != null && e.getValueIsAdjusting()) return;
         updateDiffView();
     }
-    
+
     private void updateDiffView() {
         int index = list.getSelectedIndex();
         if (index == -1) {
@@ -230,7 +228,7 @@ public class SegmentHistoryDialog extends JDialog {
         HistorySnapshot selected = list.getSelectedValue();
         String currentTargetText = Core.getEditor().getCurrentTranslation();
         if (currentTargetText == null) currentTargetText = "";
-        
+
         String baseText;
         boolean compareWithPrev = rbDiffPrev.isSelected();
 
@@ -239,7 +237,7 @@ public class SegmentHistoryDialog extends JDialog {
             if (index < model.getSize() - 1) {
                 baseText = model.getElementAt(index + 1).getText();
             } else {
-                baseText = ""; // No previous snapshot (it's the oldest)
+                baseText = "";
             }
         } else {
             // Compare against current editor state
@@ -248,7 +246,7 @@ public class SegmentHistoryDialog extends JDialog {
 
         renderDiff(baseText, selected.getText());
     }
-    
+
     private void restoreSelected() {
         HistorySnapshot selected = list.getSelectedValue();
         if (selected != null) {
@@ -269,7 +267,7 @@ public class SegmentHistoryDialog extends JDialog {
 
         diffPane.setText("");
         StyledDocument doc = diffPane.getStyledDocument();
-        
+
         Color fgColor = Styles.EditorColor.COLOR_FOREGROUND.getColor();
         Color delColor = Styles.EditorColor.COLOR_MATCHES_DEL_ACTIVE.getColor();
         if (delColor == null) delColor = Color.RED;
@@ -286,7 +284,7 @@ public class SegmentHistoryDialog extends JDialog {
         Style ins = doc.addStyle("inserted", null);
         StyleConstants.setForeground(ins, insColor);
         StyleConstants.setUnderline(ins, true); 
-        
+
         try {
             for (DiffOp op : ops) {
                 switch (op.type) {
@@ -337,7 +335,7 @@ public class SegmentHistoryDialog extends JDialog {
                 }
             }
         }
-        
+
         int i = s1.size(), j = s2.size();
         LinkedList<DiffOp> stack = new LinkedList<>();
         while (i > 0 && j > 0) {
@@ -356,39 +354,39 @@ public class SegmentHistoryDialog extends JDialog {
         while (j > 0) { stack.addFirst(new DiffOp(OpType.INSERT, s2.get(j - 1))); j--; }
         return new ArrayList<>(stack);
     }
-    
+
     private static class HistoryCellRenderer extends DefaultListCellRenderer {
         @Override
         public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus) {
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-            
+
             HistorySnapshot snap = (HistorySnapshot) value;
             String template = SegmentHistoryPrefs.getTemplate();
-            
-            // Interpret template control characters
+
+            // Interpret \n and \t in the template
             template = template.replace("\\t", "&nbsp;&nbsp;&nbsp;&nbsp;").replace("\\n", "<br>");
-            
+
             Date date = new Date(snap.getTimestamp());
             Calendar cal = Calendar.getInstance();
             cal.setTime(date);
-            
+
             String txt = snap.getText() == null ? "" : snap.getText();
-            // Important: Replace actual newlines/returns with spaces for the summary line
+            // Replace actual newlines/returns with spaces for the summary line
             String summary = txt.replace("\n", " ").replace("\r", " ").trim();
             if (summary.length() > 80) summary = summary.substring(0, 80) + "...";
-            
+
             String author = snap.getAuthor();
             if (author == null || author.isEmpty()) {
                 author = BUNDLE.getString("seghistory_dialog_unknown_author");
             }
-            
+
             String altTag = snap.isAlternative() ? escapeHtml(BUNDLE.getString("seghistory_dialog_alt_tag")) : escapeHtml(BUNDLE.getString("seghistory_dialog_def_tag"));
 
             String hexInfo = toHex(Styles.EditorColor.COLOR_ACTIVE_SOURCE_FG.getColor());
             String hexText = toHex(Styles.EditorColor.COLOR_FOREGROUND.getColor());
 
             String rText = String.format("<span style='color:%s'>%s</span>", hexText, escapeHtml(summary));
-            
+
             String formatted = template
                 .replace("${hour}", String.format("%02d", cal.get(Calendar.HOUR_OF_DAY)))
                 .replace("${minute}", String.format("%02d", cal.get(Calendar.MINUTE)))
@@ -402,7 +400,7 @@ public class SegmentHistoryDialog extends JDialog {
                 .replace("${alt}", altTag);
 
             setText(String.format("<html><span style='color:%s'>%s</span></html>", hexInfo, formatted));
-            
+
             if (isSelected) {
                 setBackground(list.getSelectionBackground());
                 setForeground(list.getSelectionForeground());
