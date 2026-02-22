@@ -17,8 +17,7 @@ public class SegmentHistoryPrefs extends BasePreferencesController {
     private static final String PREF_DIFF_MODE = "seghistory_diff_mode";
     private static final String PREF_SHORTCUT = "seghistory_shortcut";
     private static final String PREF_TEMPLATE = "seghistory_list_template";
-
-    private static final String DEFAULT_TEMPLATE = "${day}.${month}.${year} ${hour}:${minute}:${second} (${author}, ${length} chars):\\t${text}";
+    private static final String DEFAULT_TEMPLATE = "${day}.${month}.${year} ${hour}:${minute}:${second} (${author} | ${length} chars):\\t${text}";
 
     private static final ResourceBundle BUNDLE = ResourceBundle.getBundle("org.truetranslation.omegat.plugin.SegmentHistoryBundle");
 
@@ -143,7 +142,7 @@ public class SegmentHistoryPrefs extends BasePreferencesController {
         String[] vars = {
             "${hour}", "${minute}", "${second}", 
             "${day}", "${month}", "${year}", 
-            "${length}", "${text}", "${author}", "${alt}"
+            "${length}", "${text}", "${author}", "${alt}", "${origin}"
         };
         cmbVariables = new JComboBox<>(vars);
         varPanel.add(cmbVariables);

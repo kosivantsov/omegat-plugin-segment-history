@@ -5,6 +5,7 @@ import org.omegat.core.CoreEvents;
 import org.omegat.core.data.SourceTextEntry;
 import org.omegat.core.events.IApplicationEventListener;
 import org.omegat.core.events.IEntryEventListener;
+import org.omegat.core.events.IProjectEventListener;
 import org.omegat.gui.editor.IPopupMenuConstructor;
 import org.omegat.gui.editor.SegmentBuilder;
 import org.omegat.gui.main.IMainMenu;
@@ -43,6 +44,21 @@ public class SegmentHistoryPlugin {
             @Override
             public void onApplicationShutdown() {
                 manager.stopTimer();
+            }
+        });
+
+        // Register hook into OmegaT's save/load lifecycle
+        CoreEvents.registerProjectChangeListener(new IProjectEventListener() {
+            @Override
+            public void onProjectChanged(PROJECT_CHANGE_TYPE eventType) {
+                if (eventType == PROJECT_CHANGE_TYPE.LOAD) {
+                    manager.loadProjectHistory();
+                } else if (eventType == PROJECT_CHANGE_TYPE.SAVE) {
+                    manager.savePendingHistory();
+                } else if (eventType == PROJECT_CHANGE_TYPE.CLOSE) {
+                    manager.savePendingHistory();
+                    manager.clearCache();
+                }
             }
         });
 
@@ -103,7 +119,6 @@ public class SegmentHistoryPlugin {
         IMainMenu mainMenu = Core.getMainWindow().getMainMenu();
         JMenu optionsMenu = mainMenu.getOptionsMenu();
 
-        // --- Submenu Structure ---
         JMenu historySubMenu = new JMenu(BUNDLE.getString("seghistory_menu_options_menu"));
 
         historySubMenu.addMenuListener(new MenuListener() {
@@ -122,7 +137,6 @@ public class SegmentHistoryPlugin {
             public void menuCanceled(MenuEvent e) {}
         });
 
-        // 1. Enable Checkbox
         enableMenuItem = new JCheckBoxMenuItem(BUNDLE.getString("seghistory_menu_enable"));
         enableMenuItem.setSelected(SegmentHistoryPrefs.isHistoryEnabled());
         enableMenuItem.addActionListener(e -> {
@@ -131,7 +145,6 @@ public class SegmentHistoryPlugin {
         });
         historySubMenu.add(enableMenuItem);
 
-        // 2. Delete History Action
         deleteHistoryItem = new JMenuItem(BUNDLE.getString("seghistory_menu_delete_history"));
         boolean isProjectLoaded = (Core.getProject() != null && Core.getProject().isProjectLoaded());
         deleteHistoryItem.setEnabled(isProjectLoaded);
@@ -139,7 +152,6 @@ public class SegmentHistoryPlugin {
         deleteHistoryItem.addActionListener(e -> deleteHistory());
         historySubMenu.add(deleteHistoryItem);
 
-        // Insert Submenu into Options
         int targetIndex = 4;
         int count = optionsMenu.getItemCount();
         if (targetIndex < count && targetIndex >= 0) {
@@ -179,15 +191,14 @@ public class SegmentHistoryPlugin {
             try {
                 String rootPath = Core.getProject().getProjectProperties().getProjectRoot();
                 File projectRoot = new File(rootPath);
-                File editsDir = new File(projectRoot, "omegat/.edits");
 
-                if (editsDir.exists() && editsDir.isDirectory()) {
-                    // Stop any active writing
+                File historyFile = new File(projectRoot, "omegat/segment_history.tsv");
+
+                if (historyFile.exists()) {
                     manager.stopTimer();
+                    manager.clearCache();
+                    historyFile.delete();
 
-                    deleteRecursive(editsDir);
-
-                    // Restart logic if still enabled and project open
                     if (SegmentHistoryPrefs.isHistoryEnabled()) {
                         SourceTextEntry current = manager.getCurrentEntry();
                         if (current != null) {
@@ -216,18 +227,6 @@ public class SegmentHistoryPlugin {
                 e.printStackTrace();
             }
         }
-    }
-
-    private static void deleteRecursive(File file) {
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteRecursive(child);
-                }
-            }
-        }
-        file.delete();
     }
 
     private static void showHistoryDialog() {

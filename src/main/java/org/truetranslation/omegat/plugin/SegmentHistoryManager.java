@@ -7,24 +7,30 @@ import org.omegat.core.data.TMXEntry;
 import org.omegat.util.Preferences;
 
 import javax.swing.Timer;
-import java.beans.XMLDecoder;
-import java.beans.XMLEncoder;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class SegmentHistoryManager {
 
     private Timer snapshotTimer;
     private SourceTextEntry currentEntry;
-    private String currentHistoryFile;
+
+    private String currentCacheKey;
+    private String currentFileHash;
+    private String currentSrcHash;
+    private int currentRelativeIndex;
+
     private SegmentHistoryData currentData;
     private boolean isAlternativeMode;
 
-    // Listener for UI updates
+    // In-memory cache and append-only queue
+    private Map<String, SegmentHistoryData> historyCache = new ConcurrentHashMap<>();
+    private List<String> pendingWrites = Collections.synchronizedList(new ArrayList<>());
+    private File historyFile;
+
     private Runnable updateListener;
 
     public SegmentHistoryManager() {
@@ -42,48 +48,126 @@ public class SegmentHistoryManager {
         this.updateListener = listener;
     }
 
+    public void loadProjectHistory() {
+        historyCache.clear();
+        pendingWrites.clear();
+
+        if (Core.getProject() == null || !Core.getProject().isProjectLoaded()) return;
+
+        File projectRoot = new File(Core.getProject().getProjectProperties().getProjectRoot());
+        File omegatDir = new File(projectRoot, "omegat");
+        if (!omegatDir.exists()) omegatDir.mkdirs();
+
+        historyFile = new File(omegatDir, "segment_history.tsv");
+
+        if (!historyFile.exists()) return;
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(historyFile), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+                String[] parts = line.split("\t", -1);
+                if (parts.length >= 10) {
+                    String fileHash = parts[0];
+                    String srcHash = parts[1];
+                    int relativeIndex = Integer.parseInt(parts[2]);
+                    boolean isAlt = Boolean.parseBoolean(parts[3]);
+                    long timestamp = Long.parseLong(parts[4]);
+
+                    String author = decodeB64(parts[5]);
+                    String origin = decodeB64(parts[6]);
+                    String text = decodeB64(parts[7]);
+                    String sourceText = decodeB64(parts[8]);
+                    String sourceFileName = decodeB64(parts[9]);
+
+                    String key = generateCacheKey(fileHash, srcHash, relativeIndex, isAlt);
+
+                    SegmentHistoryData data = historyCache.computeIfAbsent(key, k -> {
+                        SegmentHistoryData d = new SegmentHistoryData();
+                        d.setSourceText(sourceText);
+                        d.setSourceFileName(sourceFileName);
+                        d.setRelativePosition(relativeIndex);
+                        return d;
+                    });
+
+                    HistorySnapshot snapshot = new HistorySnapshot();
+                    snapshot.setTimestamp(timestamp);
+                    snapshot.setAuthor(author);
+                    snapshot.setOrigin(origin);
+                    snapshot.setText(text);
+                    snapshot.setAlternative(isAlt);
+
+                    data.addSnapshot(snapshot);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void savePendingHistory() {
+        if (historyFile == null || pendingWrites.isEmpty()) return;
+
+        List<String> toWrite;
+        synchronized(pendingWrites) {
+            toWrite = new ArrayList<>(pendingWrites);
+            pendingWrites.clear();
+        }
+
+        if (toWrite.isEmpty()) return;
+
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(historyFile, true), StandardCharsets.UTF_8))) {
+            for (String line : toWrite) {
+                writer.write(line);
+                writer.newLine();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void clearCache() {
+        historyCache.clear();
+        pendingWrites.clear();
+        historyFile = null;
+    }
+
     public void onSegmentActivated(SourceTextEntry entry) {
         stopTimer();
 
         if (Core.getProject() == null || !Core.getProject().isProjectLoaded()) return;
 
-        // 1. Determine if this is an alternative translation
-        // TMXEntry has 'defaultTranslation'
         TMXEntry tmx = Core.getProject().getTranslationInfo(entry);
-
-        // If tmx is null, it means no translation exists yet, so it defaults to the 'default' behavior
         boolean isDefault = (tmx == null) || tmx.defaultTranslation;
         this.isAlternativeMode = !isDefault;
 
-        // 2. Resolve the "Master" entry for file naming
-        // If Default -> Find the FIRST occurrence (source of propagation)
-        // If Alternative -> Use CURRENT entry (individual history)
-        SourceTextEntry masterEntry;
-        if (isAlternativeMode) {
-            masterEntry = entry;
-        } else {
-            masterEntry = findFirstOccurrence(entry);
-        }
-
+        SourceTextEntry masterEntry = isAlternativeMode ? entry : findFirstOccurrence(entry);
         this.currentEntry = masterEntry;
 
-        // 3. Generate Filename based on Master Entry
-        // Format: <filepath_md5>_<sourcetext_md5>_<relative_num>[_alt].xml.gz
-        this.currentHistoryFile = getHistoryFilePath(masterEntry, isAlternativeMode);
+        FileInfo info = getFileInfo(masterEntry);
+        if (info == null) return;
 
-        // 4. Load Data with Conflict Resolution
-        this.currentData = loadHistoryData(this.currentHistoryFile, masterEntry);
+        this.currentFileHash = getMD5(info.filePath);
+        this.currentSrcHash = getMD5(masterEntry.getSrcText());
+        this.currentRelativeIndex = info.relativeIndex;
+        this.currentCacheKey = generateCacheKey(currentFileHash, currentSrcHash, currentRelativeIndex, isAlternativeMode);
 
-        // 4b. Seed snapshot from existing translation metadata if history is empty or out-of-sync with TMX
+        this.currentData = historyCache.computeIfAbsent(this.currentCacheKey, k -> {
+            SegmentHistoryData d = new SegmentHistoryData();
+            d.setSourceText(masterEntry.getSrcText());
+            d.setSourceFileName(info.filePath);
+            d.setRelativePosition(info.relativeIndex);
+            d.setSegmentId(masterEntry.entryNum());
+            return d;
+        });
+
         seedFromTmxIfNeeded(masterEntry);
 
-        // 5. Start Timer
         int intervalSeconds = SegmentHistoryPrefs.getSnapshotInterval();
         snapshotTimer = new Timer(intervalSeconds * 1000, e -> takeSnapshot());
         snapshotTimer.setRepeats(true);
         snapshotTimer.start();
 
-        // Take immediate snapshot if content differs
         takeSnapshot();
     }
 
@@ -102,6 +186,7 @@ public class SegmentHistoryManager {
         List<HistorySnapshot> history = currentData.getSnapshots();
         if (!history.isEmpty()) {
             HistorySnapshot last = history.get(history.size() - 1);
+            // If the text hasn't changed, don't record a new snapshot.
             if (last.getText() != null && last.getText().equals(currentText)) {
                 return;
             }
@@ -112,13 +197,17 @@ public class SegmentHistoryManager {
         snapshot.setText(currentText);
         snapshot.setAlternative(isAlternativeMode);
 
-        // Save Author & Origin
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
+
+        // Explicitly mark active editor changes as 'gui'
         snapshot.setOrigin("gui");
 
         currentData.addSnapshot(snapshot);
-        saveHistory(currentHistoryFile, currentData);
+
+        String line = buildTsvLine(currentFileHash, currentSrcHash, currentRelativeIndex, isAlternativeMode, snapshot, currentData);
+        pendingWrites.add(line);
+        notifyListener();
     }
 
     public List<HistorySnapshot> getHistoryFor(SourceTextEntry entry) {
@@ -127,27 +216,28 @@ public class SegmentHistoryManager {
         boolean altMode = !isDefault;
 
         SourceTextEntry masterEntry = altMode ? entry : findFirstOccurrence(entry);
-        String path = getHistoryFilePath(masterEntry, altMode);
+        FileInfo info = getFileInfo(masterEntry);
 
-        // Load without conflict resolution side-effects for just viewing
-        SegmentHistoryData data = loadHistoryDataRaw(path);
+        if (info == null) return new ArrayList<>();
 
-        // If raw load is empty/mismatched, try to resolve logic similar to activation
-        if (!validateData(data, masterEntry)) {
+        String fileHash = getMD5(info.filePath);
+        String srcHash = getMD5(masterEntry.getSrcText());
+        String key = generateCacheKey(fileHash, srcHash, info.relativeIndex, altMode);
+
+        SegmentHistoryData data = historyCache.get(key);
+        if (data == null) {
              return new ArrayList<>();
         }
 
         return data.getSnapshots();
     }
 
-    // Find the segment where isDup is "FIRST" or "NONE" with same source text
     private SourceTextEntry findFirstOccurrence(SourceTextEntry entry) {
         String dupStatus = String.valueOf(entry.getDuplicate());
         if ("NONE".equals(dupStatus) || "FIRST".equals(dupStatus)) {
             return entry;
         }
 
-        // It's a repetition (NEXT). Find the FIRST in the whole project.
         String src = entry.getSrcText();
         for (SourceTextEntry cand : Core.getProject().getAllEntries()) {
             if (cand.getSrcText().equals(src)) {
@@ -158,144 +248,6 @@ public class SegmentHistoryManager {
             }
         }
         return entry;
-    }
-
-    private String getHistoryFilePath(SourceTextEntry entry, boolean isAlternative) {
-        try {
-            File projectRoot = new File(Core.getProject().getProjectProperties().getProjectRoot());
-            File editsDir = new File(projectRoot, "omegat/.edits");
-            if (!editsDir.exists()) editsDir.mkdirs();
-
-            FileInfo info = getFileInfo(entry);
-            if (info == null) return null;
-
-            String fileHash = getMD5(info.filePath);
-            String srcHash = getMD5(entry.getSrcText());
-
-            // Construct filename with checksums
-            String filename = String.format("%s_%s_%d%s.xml.gz",
-                    fileHash, srcHash, info.relativeIndex, isAlternative ? "_alt" : "");
-
-            return new File(editsDir, filename).getAbsolutePath();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
-    }
-
-    private SegmentHistoryData loadHistoryData(String path, SourceTextEntry expectedEntry) {
-        if (path == null) return new SegmentHistoryData();
-
-        File f = new File(path);
-
-        // 1. Try to load existing
-        if (f.exists()) {
-            SegmentHistoryData data = loadHistoryDataRaw(path);
-
-            // 2. Validate Source Text
-            if (validateData(data, expectedEntry)) {
-                return data;
-            }
-
-            // 3. Mismatch detected.
-            // Strategy: Look for the file 5 segments back and forward (heuristic for shifted segments)
-            FileInfo info = getFileInfo(expectedEntry);
-            if (info != null) {
-                String fileHash = getMD5(info.filePath);
-                String srcHash = getMD5(expectedEntry.getSrcText());
-                File editsDir = f.getParentFile();
-
-                for (int offset = -5; offset <= 5; offset++) {
-                    if (offset == 0) continue;
-                    int neighborIndex = info.relativeIndex + offset;
-                    if (neighborIndex < 1) continue;
-
-                    String neighborName = String.format("%s_%s_%d%s.xml.gz",
-                            fileHash, srcHash, neighborIndex, isAlternativeMode ? "_alt" : "");
-                    File neighborFile = new File(editsDir, neighborName);
-
-                    if (neighborFile.exists()) {
-                        SegmentHistoryData neighborData = loadHistoryDataRaw(neighborFile.getAbsolutePath());
-                        if (validateData(neighborData, expectedEntry)) {
-                            // Found it! Rename neighbor to current (move history)
-                            // But first, backup current file if it exists
-                            renameToBackup(f);
-                            neighborFile.renameTo(f);
-                            return neighborData;
-                        }
-                    }
-                }
-            }
-
-            // 4. Still not found? Backup the mismatched file and start new.
-            renameToBackup(f);
-        }
-
-        // 5. New Data
-        SegmentHistoryData newData = new SegmentHistoryData();
-        fillMetadata(newData, expectedEntry);
-        return newData;
-    }
-
-    private void renameToBackup(File f) {
-        if (!f.exists()) return;
-        String backupName = f.getName() + "." + System.currentTimeMillis() + ".bak";
-        f.renameTo(new File(f.getParentFile(), backupName));
-    }
-
-    private SegmentHistoryData loadHistoryDataRaw(String path) {
-        ClassLoader originalCL = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
-
-        try (XMLDecoder d = new XMLDecoder(new BufferedInputStream(new GZIPInputStream(new FileInputStream(path))))) {
-            Object obj = d.readObject();
-            if (obj instanceof SegmentHistoryData) {
-                return (SegmentHistoryData) obj;
-            }
-        } catch (Exception e) {
-            // ignore
-        } finally {
-            Thread.currentThread().setContextClassLoader(originalCL);
-        }
-        return new SegmentHistoryData();
-    }
-
-    private boolean validateData(SegmentHistoryData data, SourceTextEntry entry) {
-        if (data == null) return false;
-        // Check if source text matches.
-        if (data.getSourceText() == null || data.getSourceText().isEmpty()) return false;
-        return data.getSourceText().equals(entry.getSrcText());
-    }
-
-    private void saveHistory(String path, SegmentHistoryData data) {
-        if (path == null) return;
-
-        ClassLoader originalCL = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(this.getClass().getClassLoader());
-
-        try (XMLEncoder e = new XMLEncoder(new BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(path))))) {
-            e.writeObject(data);
-        } catch (Exception ex) {
-            ex.printStackTrace();
-        } finally {
-            Thread.currentThread().setContextClassLoader(originalCL);
-        }
-
-        // Notify listener that data has changed
-        if (updateListener != null) {
-            updateListener.run();
-        }
-    }
-
-    private void fillMetadata(SegmentHistoryData data, SourceTextEntry entry) {
-        data.setSourceText(entry.getSrcText());
-        data.setSegmentId(entry.entryNum());
-
-        FileInfo info = getFileInfo(entry);
-        if (info != null) {
-            data.setSourceFileName(info.filePath);
-            data.setRelativePosition(info.relativeIndex);
-        }
     }
 
     public void forceSnapshot(String text) {
@@ -314,24 +266,17 @@ public class SegmentHistoryManager {
         snapshot.setText(text);
         snapshot.setAlternative(isAlternativeMode);
 
-        // Save Author & Origin
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
         snapshot.setOrigin("gui");
 
         currentData.addSnapshot(snapshot);
-        saveHistory(currentHistoryFile, currentData);
+
+        String line = buildTsvLine(currentFileHash, currentSrcHash, currentRelativeIndex, isAlternativeMode, snapshot, currentData);
+        pendingWrites.add(line);
+        notifyListener();
     }
 
-    /**
-     * If a segment has a translation (TMXEntry exists), we want to ensure its latest
-     * state is recorded. This applies when:
-     * 1. No history existed yet (seeding the very first snapshot).
-     * 2. History exists, but the latest snapshot differs from the current translation
-     *    (indicating it was modified externally, e.g. via TM enforce).
-     *
-     * In both cases, we use the TMXEntry's changer and changeDate and flag the origin as 'tm'.
-     */
     private void seedFromTmxIfNeeded(SourceTextEntry entry) {
         if (entry == null || currentData == null) return;
 
@@ -339,42 +284,70 @@ public class SegmentHistoryManager {
         if (info == null) return;
 
         String currentText = Core.getEditor().getCurrentTranslation();
-        if (currentText == null || currentText.trim().isEmpty()) return;
+        String tmxText = info.translation;
+
+        // We only want to seed from TM if the TM has a valid translation
+        if (tmxText == null || tmxText.trim().isEmpty()) return;
 
         List<HistorySnapshot> history = currentData.getSnapshots();
         if (history != null && !history.isEmpty()) {
             HistorySnapshot last = history.get(history.size() - 1);
-            if (last.getText() != null && last.getText().equals(currentText)) {
+
+            // If the last snapshot matches the TM text exactly, we don't need to seed.
+            if (last.getText() != null && last.getText().equals(tmxText)) {
                 return;
+            }
+
+            // If the editor has live text that matches the last snapshot (meaning the user
+            // typed it but hasn't moved away), and it matches the TM, do nothing.
+            if (currentText != null && currentText.equals(last.getText()) && currentText.equals(tmxText)) {
+                 return;
             }
         }
 
+        // 1. Author Logic: changer -> creator -> NO fallback to preferences
         String changer = readStringProperty(info, "changer");
+        if (changer == null || changer.trim().isEmpty()) {
+            changer = readStringProperty(info, "creator");
+        }
+        if (changer == null) {
+            changer = "";
+        }
+
+        // 2. Date Logic: changeDate -> creationDate -> System.currentTimeMillis()
         long changeDate = readLongProperty(info, "changeDate");
+        if (changeDate <= 0) {
+            changeDate = readLongProperty(info, "creationDate");
+        }
 
         long ts = normalizeEpochMillis(changeDate);
         if (ts <= 0) {
             ts = System.currentTimeMillis();
         }
 
-        if (changer == null || changer.trim().isEmpty()) {
-            changer = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
-        }
-
         HistorySnapshot snapshot = new HistorySnapshot();
         snapshot.setTimestamp(ts);
-        snapshot.setText(currentText);
+
+        snapshot.setText(tmxText);
         snapshot.setAlternative(isAlternativeMode);
         snapshot.setAuthor(changer);
         snapshot.setOrigin("tm");
 
         currentData.addSnapshot(snapshot);
-        saveHistory(currentHistoryFile, currentData);
+
+        String line = buildTsvLine(currentFileHash, currentSrcHash, currentRelativeIndex, isAlternativeMode, snapshot, currentData);
+        pendingWrites.add(line);
+        notifyListener();
+    }
+
+    private void notifyListener() {
+        if (updateListener != null) {
+            updateListener.run();
+        }
     }
 
     private long normalizeEpochMillis(long raw) {
         if (raw <= 0) return raw;
-        // Heuristic: if it looks like seconds-since-epoch, convert to milliseconds.
         if (raw < 10_000_000_000L) {
             return raw * 1000L;
         }
@@ -403,37 +376,29 @@ public class SegmentHistoryManager {
     private Object readProperty(Object obj, String name) {
         if (obj == null || name == null || name.isEmpty()) return null;
 
-        // 1) Try field (public then declared)
         try {
             java.lang.reflect.Field f = obj.getClass().getField(name);
             return f.get(obj);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         try {
             java.lang.reflect.Field f = obj.getClass().getDeclaredField(name);
             f.setAccessible(true);
             return f.get(obj);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
-        // 2) Try getter (getXxx)
         String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
         try {
             java.lang.reflect.Method m = obj.getClass().getMethod(getter);
             return m.invoke(obj);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         try {
             java.lang.reflect.Method m = obj.getClass().getDeclaredMethod(getter);
             m.setAccessible(true);
             return m.invoke(obj);
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         return null;
     }
-
-    // --- Helpers ---
 
     private static class FileInfo {
         String filePath;
@@ -454,10 +419,9 @@ public class SegmentHistoryManager {
                 FileInfo info = new FileInfo();
                 info.filePath = fi.filePath;
 
-                // Find relative index within the file
                 for (int i=0; i < fi.entries.size(); i++) {
                     if (fi.entries.get(i).entryNum() == currentNum) {
-                        info.relativeIndex = i + 1; // 1-based index
+                        info.relativeIndex = i + 1;
                         return info;
                     }
                 }
@@ -478,5 +442,38 @@ public class SegmentHistoryManager {
         } catch (Exception e) {
             return Integer.toHexString(input.hashCode());
         }
+    }
+
+    private String buildTsvLine(String fileHash, String srcHash, int relativeIndex, boolean isAlt, HistorySnapshot snapshot, SegmentHistoryData data) {
+        return String.join("\t",
+            fileHash,
+            srcHash,
+            String.valueOf(relativeIndex),
+            String.valueOf(isAlt),
+            String.valueOf(snapshot.getTimestamp()),
+            encodeB64(snapshot.getAuthor()),
+            encodeB64(snapshot.getOrigin()),
+            encodeB64(snapshot.getText()),
+            encodeB64(data.getSourceText()),
+            encodeB64(data.getSourceFileName())
+        );
+    }
+
+    private String encodeB64(String s) {
+        if (s == null) return "";
+        return Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String decodeB64(String s) {
+        if (s == null || s.isEmpty()) return "";
+        try {
+            return new String(Base64.getDecoder().decode(s), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private String generateCacheKey(String fileHash, String srcHash, int relativeIndex, boolean isAlt) {
+        return String.format("%s_%s_%d_%b", fileHash, srcHash, relativeIndex, isAlt);
     }
 }

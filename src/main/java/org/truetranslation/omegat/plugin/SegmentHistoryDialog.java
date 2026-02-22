@@ -148,27 +148,63 @@ public class SegmentHistoryDialog extends JDialog {
 
         // --- Global ESC Key Binding ---
         JRootPane rootPane = getRootPane();
-        rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
-            KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "closeDialog");
-        rootPane.getActionMap().put("closeDialog", new AbstractAction() {
+        InputMap inputMap = rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+        ActionMap actionMap = rootPane.getActionMap();
+
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "closeDialog");
+        actionMap.put("closeDialog", new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
                 dispose();
             }
         });
 
+        // --- Global KeyEventDispatcher for UP/DOWN arrows ---
+        // This prevents JRadioButtons from intercepting the arrow keys.
+        KeyEventDispatcher keyDispatcher = new KeyEventDispatcher() {
+            @Override
+            public boolean dispatchKeyEvent(KeyEvent e) {
+                // Only process events when this dialog is the active window
+                if (!SegmentHistoryDialog.this.isActive()) {
+                    return false;
+                }
+                
+                if (e.getID() == KeyEvent.KEY_PRESSED) {
+                    if (e.getKeyCode() == KeyEvent.VK_UP || e.getKeyCode() == KeyEvent.VK_DOWN) {
+                        // If the list isn't already focused, focus it
+                        if (!list.hasFocus()) {
+                            list.requestFocusInWindow();
+                        }
+                        
+                        // Manually trigger the list's built-in navigation actions
+                        String actionMapKey = (e.getKeyCode() == KeyEvent.VK_UP) ? "selectPreviousRow" : "selectNextRow";
+                        Action action = list.getActionMap().get(actionMapKey);
+                        if (action != null) {
+                            action.actionPerformed(new ActionEvent(list, ActionEvent.ACTION_PERFORMED, null));
+                        }
+                        
+                        // Consume the event so radio buttons don't receive it
+                        return true;
+                    }
+                }
+                return false;
+            }
+        };
+
+        KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(keyDispatcher);
+
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent e) {
                 currentInstance = null;
-                // Unregister listener when dialog closes
+                // Remove the dispatcher when dialog closes to prevent memory leaks
+                KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(keyDispatcher);
                 if (manager != null) {
                     manager.setUpdateListener(null);
                 }
             }
         });
 
-        // Register this dialog as a listener to history updates
         manager.setUpdateListener(() -> SwingUtilities.invokeLater(() -> updateForEntry(this.currentEntry)));
 
         updateForEntry(entry);
