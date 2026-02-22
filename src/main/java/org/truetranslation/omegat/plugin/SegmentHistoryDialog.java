@@ -188,10 +188,10 @@ public class SegmentHistoryDialog extends JDialog {
         list.setListData(history.toArray(new HistorySnapshot[0]));
 
         boolean isAlternative = manager.isAlternativeMode();
-        String typeText = isAlternative ? BUNDLE.getString("seghistory_dialog_type_alternative") 
+        String typeText = isAlternative ? BUNDLE.getString("seghistory_dialog_type_alternative")
                                         : BUNDLE.getString("seghistory_dialog_type_default");
 
-        String title = MessageFormat.format(BUNDLE.getString("seghistory_dialog_title_format"), 
+        String title = MessageFormat.format(BUNDLE.getString("seghistory_dialog_title_format"),
                 entry.entryNum(), typeText, history.size());
         setTitle(title);
 
@@ -283,7 +283,7 @@ public class SegmentHistoryDialog extends JDialog {
 
         Style ins = doc.addStyle("inserted", null);
         StyleConstants.setForeground(ins, insColor);
-        StyleConstants.setUnderline(ins, true); 
+        StyleConstants.setUnderline(ins, true);
 
         try {
             for (DiffOp op : ops) {
@@ -387,6 +387,10 @@ public class SegmentHistoryDialog extends JDialog {
 
             String rText = String.format("<span style='color:%s'>%s</span>", hexText, escapeHtml(summary));
 
+            String origin = snap.getOrigin();
+            String originKey = ("gui".equals(origin) || "tm".equals(origin)) ? origin : "none";
+            String originStr = BUNDLE.getString("seghistory_dialog_origin_" + originKey);
+
             String formatted = template
                 .replace("${hour}", String.format("%02d", cal.get(Calendar.HOUR_OF_DAY)))
                 .replace("${minute}", String.format("%02d", cal.get(Calendar.MINUTE)))
@@ -397,6 +401,7 @@ public class SegmentHistoryDialog extends JDialog {
                 .replace("${length}", String.valueOf(txt.length()))
                 .replace("${text}", rText)
                 .replace("${author}", escapeHtml(author))
+                .replace("${origin}", escapeHtml(originStr))
                 .replace("${alt}", altTag);
 
             setText(String.format("<html><span style='color:%s'>%s</span></html>", hexInfo, formatted));

@@ -55,7 +55,7 @@ public class SegmentHistoryManager {
         boolean isDefault = (tmx == null) || tmx.defaultTranslation;
         this.isAlternativeMode = !isDefault;
 
-        // 2. Resolve the master entry for file naming
+        // 2. Resolve the "Master" entry for file naming
         // If Default -> Find the FIRST occurrence (source of propagation)
         // If Alternative -> Use CURRENT entry (individual history)
         SourceTextEntry masterEntry;
@@ -67,18 +67,15 @@ public class SegmentHistoryManager {
 
         this.currentEntry = masterEntry;
 
-        // 3. Generate Filename based on master entry
+        // 3. Generate Filename based on Master Entry
         // Format: <filepath_md5>_<sourcetext_md5>_<relative_num>[_alt].xml.gz
         this.currentHistoryFile = getHistoryFilePath(masterEntry, isAlternativeMode);
-
-        // Track whether a history file existed BEFORE loading/creating data.
-        boolean historyFileExistedBefore = currentHistoryFile != null && new File(currentHistoryFile).exists();
 
         // 4. Load Data with Conflict Resolution
         this.currentData = loadHistoryData(this.currentHistoryFile, masterEntry);
 
-        // 4b. Seed first snapshot from existing translation metadata (only when history file did not exist yet)
-        seedFirstSnapshotFromTmxIfNeeded(masterEntry, historyFileExistedBefore);
+        // 4b. Seed snapshot from existing translation metadata if history is empty or out-of-sync with TMX
+        seedFromTmxIfNeeded(masterEntry);
 
         // 5. Start Timer
         int intervalSeconds = SegmentHistoryPrefs.getSnapshotInterval();
@@ -115,9 +112,10 @@ public class SegmentHistoryManager {
         snapshot.setText(currentText);
         snapshot.setAlternative(isAlternativeMode);
 
-        // Save Author
+        // Save Author & Origin
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
+        snapshot.setOrigin("gui");
 
         currentData.addSnapshot(snapshot);
         saveHistory(currentHistoryFile, currentData);
@@ -136,7 +134,7 @@ public class SegmentHistoryManager {
 
         // If raw load is empty/mismatched, try to resolve logic similar to activation
         if (!validateData(data, masterEntry)) {
-            return new ArrayList<>();
+             return new ArrayList<>();
         }
 
         return data.getSnapshots();
@@ -220,7 +218,7 @@ public class SegmentHistoryManager {
                         SegmentHistoryData neighborData = loadHistoryDataRaw(neighborFile.getAbsolutePath());
                         if (validateData(neighborData, expectedEntry)) {
                             // Found it! Rename neighbor to current (move history)
-                            // Backup current file if it exists
+                            // But first, backup current file if it exists
                             renameToBackup(f);
                             neighborFile.renameTo(f);
                             return neighborData;
@@ -316,34 +314,40 @@ public class SegmentHistoryManager {
         snapshot.setText(text);
         snapshot.setAlternative(isAlternativeMode);
 
-        // Save Author
+        // Save Author & Origin
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
+        snapshot.setOrigin("gui");
 
         currentData.addSnapshot(snapshot);
         saveHistory(currentHistoryFile, currentData);
     }
 
     /**
-     * If a segment already has a translation (TMXEntry exists) but no history file existed yet,
-     * the *first* snapshot will reflect the translation metadata:
-     * - author = entry's changer
-     * - timestamp = entry's changeDate
+     * If a segment has a translation (TMXEntry exists), we want to ensure its latest
+     * state is recorded. This applies when:
+     * 1. No history existed yet (seeding the very first snapshot).
+     * 2. History exists, but the latest snapshot differs from the current translation
+     *    (indicating it was modified externally, e.g. via TM enforce).
      *
-     * All subsequent snapshots will be created by takeSnapshot()/forceSnapshot() and will use TEAM_AUTHOR + current time.
+     * In both cases, we use the TMXEntry's changer and changeDate and flag the origin as 'tm'.
      */
-    private void seedFirstSnapshotFromTmxIfNeeded(SourceTextEntry entry, boolean historyFileExistedBefore) {
-        if (historyFileExistedBefore) return;
+    private void seedFromTmxIfNeeded(SourceTextEntry entry) {
         if (entry == null || currentData == null) return;
-
-        List<HistorySnapshot> history = currentData.getSnapshots();
-        if (history != null && !history.isEmpty()) return;
 
         TMXEntry info = Core.getProject().getTranslationInfo(entry);
         if (info == null) return;
 
         String currentText = Core.getEditor().getCurrentTranslation();
         if (currentText == null || currentText.trim().isEmpty()) return;
+
+        List<HistorySnapshot> history = currentData.getSnapshots();
+        if (history != null && !history.isEmpty()) {
+            HistorySnapshot last = history.get(history.size() - 1);
+            if (last.getText() != null && last.getText().equals(currentText)) {
+                return;
+            }
+        }
 
         String changer = readStringProperty(info, "changer");
         long changeDate = readLongProperty(info, "changeDate");
@@ -362,6 +366,7 @@ public class SegmentHistoryManager {
         snapshot.setText(currentText);
         snapshot.setAlternative(isAlternativeMode);
         snapshot.setAuthor(changer);
+        snapshot.setOrigin("tm");
 
         currentData.addSnapshot(snapshot);
         saveHistory(currentHistoryFile, currentData);
@@ -429,6 +434,7 @@ public class SegmentHistoryManager {
     }
 
     // --- Helpers ---
+
     private static class FileInfo {
         String filePath;
         int relativeIndex;
@@ -449,7 +455,7 @@ public class SegmentHistoryManager {
                 info.filePath = fi.filePath;
 
                 // Find relative index within the file
-                for (int i = 0; i < fi.entries.size(); i++) {
+                for (int i=0; i < fi.entries.size(); i++) {
                     if (fi.entries.get(i).entryNum() == currentNum) {
                         info.relativeIndex = i + 1; // 1-based index
                         return info;
