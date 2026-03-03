@@ -28,6 +28,10 @@ public class SegmentHistoryPlugin {
     private static JMenuItem deleteHistoryItem;
     private static JMenuItem editMenuItem;
 
+    public static SegmentHistoryManager getManager() {
+        return manager;
+    }
+
     public static void loadPlugins() {
         manager = new SegmentHistoryManager();
 
@@ -54,7 +58,8 @@ public class SegmentHistoryPlugin {
                 if (eventType == PROJECT_CHANGE_TYPE.LOAD) {
                     manager.loadProjectHistory();
                 } else if (eventType == PROJECT_CHANGE_TYPE.SAVE) {
-                    manager.savePendingHistory();
+                    manager.savePendingHistory(); // Commits changes to the flat files
+                    SegmentHistoryTeamSync.scheduleSyncAfterSave(); // Merge & push if Team Project
                 } else if (eventType == PROJECT_CHANGE_TYPE.CLOSE) {
                     manager.savePendingHistory();
                     manager.clearCache();
@@ -193,11 +198,13 @@ public class SegmentHistoryPlugin {
                 File projectRoot = new File(rootPath);
 
                 File historyFile = new File(projectRoot, "omegat/segment_history.tsv");
+                File localHistoryFile = new File(projectRoot, "omegat/segment_history_local.tsv");
 
-                if (historyFile.exists()) {
+                if (historyFile.exists() || localHistoryFile.exists()) {
                     manager.stopTimer();
                     manager.clearCache();
-                    historyFile.delete();
+                    if (historyFile.exists()) historyFile.delete();
+                    if (localHistoryFile.exists()) localHistoryFile.delete();
 
                     if (SegmentHistoryPrefs.isHistoryEnabled()) {
                         SourceTextEntry current = manager.getCurrentEntry();

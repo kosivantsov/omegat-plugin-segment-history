@@ -29,7 +29,9 @@ public class SegmentHistoryManager {
     // In-memory cache and append-only queue
     private Map<String, SegmentHistoryData> historyCache = new ConcurrentHashMap<>();
     private List<String> pendingWrites = Collections.synchronizedList(new ArrayList<>());
+    
     private File historyFile;
+    private File localHistoryFile; // Preserved local history (immune to OmegaT blind overwrites)
 
     private Runnable updateListener;
 
@@ -59,6 +61,18 @@ public class SegmentHistoryManager {
         if (!omegatDir.exists()) omegatDir.mkdirs();
 
         historyFile = new File(omegatDir, "segment_history.tsv");
+
+        // If it is a Team Project, OmegaT might have reset historyFile. We merge our safe harbor back in.
+        if (Core.getProject().isRemoteProject()) {
+            localHistoryFile = new File(omegatDir, "segment_history_local.tsv");
+            if (historyFile.exists() || localHistoryFile.exists()) {
+                List<String> merged = SegmentHistoryTeamSync.mergeTsvFiles(historyFile, localHistoryFile);
+                SegmentHistoryTeamSync.writeLines(historyFile, merged);
+                SegmentHistoryTeamSync.writeLines(localHistoryFile, merged);
+            }
+        } else {
+            localHistoryFile = null; // Strictly ignore local merge logic for standard projects
+        }
 
         if (!historyFile.exists()) return;
 
@@ -116,8 +130,18 @@ public class SegmentHistoryManager {
 
         if (toWrite.isEmpty()) return;
 
-        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(historyFile, true), StandardCharsets.UTF_8))) {
-            for (String line : toWrite) {
+        // Standard save (gets overwritten by Team syncs occasionally)
+        appendToFile(historyFile, toWrite);
+
+        // Harbor save (immune to Team syncs - enables the load merge to work perfectly)
+        if (Core.getProject().isRemoteProject() && localHistoryFile != null) {
+            appendToFile(localHistoryFile, toWrite);
+        }
+    }
+
+    private void appendToFile(File file, List<String> lines) {
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file, true), StandardCharsets.UTF_8))) {
+            for (String line : lines) {
                 writer.write(line);
                 writer.newLine();
             }
@@ -130,6 +154,7 @@ public class SegmentHistoryManager {
         historyCache.clear();
         pendingWrites.clear();
         historyFile = null;
+        localHistoryFile = null;
     }
 
     public void onSegmentActivated(SourceTextEntry entry) {
@@ -186,7 +211,6 @@ public class SegmentHistoryManager {
         List<HistorySnapshot> history = currentData.getSnapshots();
         if (!history.isEmpty()) {
             HistorySnapshot last = history.get(history.size() - 1);
-            // If the text hasn't changed, don't record a new snapshot.
             if (last.getText() != null && last.getText().equals(currentText)) {
                 return;
             }
@@ -199,8 +223,6 @@ public class SegmentHistoryManager {
 
         String author = Preferences.getPreferenceDefault(Preferences.TEAM_AUTHOR, System.getProperty("user.name"));
         snapshot.setAuthor(author);
-
-        // Explicitly mark active editor changes as 'gui'
         snapshot.setOrigin("gui");
 
         currentData.addSnapshot(snapshot);
@@ -225,9 +247,7 @@ public class SegmentHistoryManager {
         String key = generateCacheKey(fileHash, srcHash, info.relativeIndex, altMode);
 
         SegmentHistoryData data = historyCache.get(key);
-        if (data == null) {
-             return new ArrayList<>();
-        }
+        if (data == null) return new ArrayList<>();
 
         return data.getSnapshots();
     }
@@ -286,48 +306,29 @@ public class SegmentHistoryManager {
         String currentText = Core.getEditor().getCurrentTranslation();
         String tmxText = info.translation;
 
-        // We only want to seed from TM if the TM has a valid translation
         if (tmxText == null || tmxText.trim().isEmpty()) return;
 
         List<HistorySnapshot> history = currentData.getSnapshots();
         if (history != null && !history.isEmpty()) {
             HistorySnapshot last = history.get(history.size() - 1);
-
-            // If the last snapshot matches the TM text exactly, we don't need to seed.
-            if (last.getText() != null && last.getText().equals(tmxText)) {
-                return;
-            }
-
-            // If the editor has live text that matches the last snapshot (meaning the user
-            // typed it but hasn't moved away), and it matches the TM, do nothing.
-            if (currentText != null && currentText.equals(last.getText()) && currentText.equals(tmxText)) {
-                 return;
-            }
+            if (last.getText() != null && last.getText().equals(tmxText)) return;
+            if (currentText != null && currentText.equals(last.getText()) && currentText.equals(tmxText)) return;
         }
 
-        // 1. Author Logic: changer -> creator -> NO fallback to preferences
         String changer = readStringProperty(info, "changer");
         if (changer == null || changer.trim().isEmpty()) {
             changer = readStringProperty(info, "creator");
         }
-        if (changer == null) {
-            changer = "";
-        }
+        if (changer == null) changer = "";
 
-        // 2. Date Logic: changeDate -> creationDate -> System.currentTimeMillis()
         long changeDate = readLongProperty(info, "changeDate");
-        if (changeDate <= 0) {
-            changeDate = readLongProperty(info, "creationDate");
-        }
+        if (changeDate <= 0) changeDate = readLongProperty(info, "creationDate");
 
         long ts = normalizeEpochMillis(changeDate);
-        if (ts <= 0) {
-            ts = System.currentTimeMillis();
-        }
+        if (ts <= 0) ts = System.currentTimeMillis();
 
         HistorySnapshot snapshot = new HistorySnapshot();
         snapshot.setTimestamp(ts);
-
         snapshot.setText(tmxText);
         snapshot.setAlternative(isAlternativeMode);
         snapshot.setAuthor(changer);
@@ -341,16 +342,12 @@ public class SegmentHistoryManager {
     }
 
     private void notifyListener() {
-        if (updateListener != null) {
-            updateListener.run();
-        }
+        if (updateListener != null) updateListener.run();
     }
 
     private long normalizeEpochMillis(long raw) {
         if (raw <= 0) return raw;
-        if (raw < 10_000_000_000L) {
-            return raw * 1000L;
-        }
+        if (raw < 10_000_000_000L) return raw * 1000L;
         return raw;
     }
 
@@ -361,14 +358,9 @@ public class SegmentHistoryManager {
 
     private long readLongProperty(Object obj, String name) {
         Object v = readProperty(obj, name);
-        if (v instanceof Number) {
-            return ((Number) v).longValue();
-        }
+        if (v instanceof Number) return ((Number) v).longValue();
         if (v != null) {
-            try {
-                return Long.parseLong(String.valueOf(v));
-            } catch (Exception ignored) {
-            }
+            try { return Long.parseLong(String.valueOf(v)); } catch (Exception ignored) {}
         }
         return 0L;
     }
@@ -376,26 +368,12 @@ public class SegmentHistoryManager {
     private Object readProperty(Object obj, String name) {
         if (obj == null || name == null || name.isEmpty()) return null;
 
-        try {
-            java.lang.reflect.Field f = obj.getClass().getField(name);
-            return f.get(obj);
-        } catch (Exception ignored) {}
-        try {
-            java.lang.reflect.Field f = obj.getClass().getDeclaredField(name);
-            f.setAccessible(true);
-            return f.get(obj);
-        } catch (Exception ignored) {}
+        try { java.lang.reflect.Field f = obj.getClass().getField(name); return f.get(obj); } catch (Exception ignored) {}
+        try { java.lang.reflect.Field f = obj.getClass().getDeclaredField(name); f.setAccessible(true); return f.get(obj); } catch (Exception ignored) {}
 
         String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
-        try {
-            java.lang.reflect.Method m = obj.getClass().getMethod(getter);
-            return m.invoke(obj);
-        } catch (Exception ignored) {}
-        try {
-            java.lang.reflect.Method m = obj.getClass().getDeclaredMethod(getter);
-            m.setAccessible(true);
-            return m.invoke(obj);
-        } catch (Exception ignored) {}
+        try { java.lang.reflect.Method m = obj.getClass().getMethod(getter); return m.invoke(obj); } catch (Exception ignored) {}
+        try { java.lang.reflect.Method m = obj.getClass().getDeclaredMethod(getter); m.setAccessible(true); return m.invoke(obj); } catch (Exception ignored) {}
 
         return null;
     }
@@ -411,14 +389,12 @@ public class SegmentHistoryManager {
 
         for (IProject.FileInfo fi : files) {
             if (fi.entries == null || fi.entries.isEmpty()) continue;
-
             int first = fi.entries.get(0).entryNum();
             int last = fi.entries.get(fi.entries.size() - 1).entryNum();
 
             if (currentNum >= first && currentNum <= last) {
                 FileInfo info = new FileInfo();
                 info.filePath = fi.filePath;
-
                 for (int i=0; i < fi.entries.size(); i++) {
                     if (fi.entries.get(i).entryNum() == currentNum) {
                         info.relativeIndex = i + 1;
@@ -435,9 +411,7 @@ public class SegmentHistoryManager {
             MessageDigest md = MessageDigest.getInstance("MD5");
             byte[] messageDigest = md.digest(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
-            for (byte b : messageDigest) {
-                sb.append(String.format("%02x", b));
-            }
+            for (byte b : messageDigest) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (Exception e) {
             return Integer.toHexString(input.hashCode());
@@ -466,11 +440,7 @@ public class SegmentHistoryManager {
 
     private String decodeB64(String s) {
         if (s == null || s.isEmpty()) return "";
-        try {
-            return new String(Base64.getDecoder().decode(s), StandardCharsets.UTF_8);
-        } catch (Exception e) {
-            return "";
-        }
+        try { return new String(Base64.getDecoder().decode(s), StandardCharsets.UTF_8); } catch (Exception e) { return ""; }
     }
 
     private String generateCacheKey(String fileHash, String srcHash, int relativeIndex, boolean isAlt) {
