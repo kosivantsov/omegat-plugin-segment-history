@@ -14,6 +14,17 @@ To list available edits for the current segment, use one of the following method
 - Right-click in the current segment and select **Show Segment History**.
 - Press the shortcut set in the [Plugin configuration](#plugin-configuration).
 
+### Deleting history
+
+To delete the editing history for **ALL** segments in the current project, select **Options** > **Segment History** > **Delete History...**.
+
+### Team projects
+
+This plugin fully supports team projects. During each sync, the local history file is merged with the remote version, and the combined file is pushed back to the repository. This ensures that local history is never overwritten and new edits are always appended.
+
+If you delete the history file while working in a team project, only your local copy is removed. OmegaT will re-download the remote version the next time the project is reloaded. To permanently delete the history file from a team project, you must remove it using your SVN or Git client.
+
+
 ## Recorded edits
 
 When you activate a segment, the plugin periodically takes snapshots of the current target text and appends them to the history TSV file.
